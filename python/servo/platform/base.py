@@ -51,8 +51,6 @@ class Base:
                 f"gst-plugin-scanner{self.executable_suffix()}",
             )
             env["GST_PLUGIN_SYSTEM_PATH"] = os.path.join(gstreamer_root, "lib", "gstreamer-1.0")
-            if self.is_macos:
-                env["OPENSSL_INCLUDE_DIR"] = os.path.join(gstreamer_root, "Headers")
 
         # If we are not cross-compiling GStreamer must be installed for the system. In
         # the cross-compilation case, we might be picking it up from another directory.
@@ -99,6 +97,7 @@ class Base:
     def bootstrap(self, force: bool):
         installed_something = self._platform_bootstrap(force)
         installed_something |= self.install_taplo(force)
+        installed_something |= self.install_crown(force)
         if not installed_something:
             print("Dependencies were already installed!")
 
@@ -109,6 +108,18 @@ class Base:
         if subprocess.call(["cargo", "install", "taplo-cli", "--locked"],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE) != 0:
             raise EnvironmentError("Installation of taplo failed.")
+
+        return True
+
+    def install_crown(self, force: bool) -> bool:
+        # We need to override the rustc set in cargo/config.toml because crown
+        # may not be installed yet.
+        env = dict(os.environ)
+        env["CARGO_BUILD_RUSTC"] = "rustc"
+
+        if subprocess.call(["cargo", "install", "--path", "support/crown"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) != 0:
+            raise EnvironmentError("Installation of crown failed.")
 
         return True
 

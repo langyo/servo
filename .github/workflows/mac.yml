@@ -3,9 +3,10 @@ name: Mac
 on:
   workflow_call:
     inputs:
-      production:
+      profile:
         required: false
-        type: boolean
+        default: "release"
+        type: string
       wpt-layout:
         required: false
         type: string
@@ -22,9 +23,11 @@ on:
         type: string
   workflow_dispatch:
     inputs:
-      production:
+      profile:
         required: false
-        type: boolean
+        default: "release"
+        type: choice
+        options: ["release", "debug", "production"]
       wpt-layout:
         required: false
         type: choice
@@ -41,12 +44,9 @@ on:
     branches: ["try-mac", "try-wpt-mac", "try-wpt-mac-2020"]
 
 env:
-  cargo_profile_option: ${{ inputs.production && '--profile production' || '--release' }}
-  cargo_profile_name: ${{ inputs.production && 'production' || 'release' }}
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
   CCACHE: "sccache"
   CARGO_INCREMENTAL: 0
 
@@ -55,16 +55,23 @@ jobs:
     name: Mac Build
     runs-on: macos-13
     steps:
+      # XProtect can cause random failures if it decides that the DMG we create
+      # during the packaging phase is malware.
+      # TODO(mrobinson): Is there a way we can do things in a less suspicious way so
+      # we don't have to kill this service?
+      - name: Kill XProtectBehaviorService
+        run: |
+          echo Killing XProtect.; sudo pkill -9 XProtect >/dev/null || true;
       - uses: actions/checkout@v3
-        if: github.event_name != 'issue_comment' && github.event_name != 'pull_request_target'
+        if: github.event_name != 'pull_request_target'
         with:
           fetch-depth: 2
-      # This is necessary to checkout the pull request if this run was triggered
-      # via an `issue_comment` action on a pull request.
+      # This is necessary to checkout the pull request if this run was triggered via a
+      # `pull_request_target` event.
       - uses: actions/checkout@v3
-        if: github.event_name == 'issue_comment' || github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target'
         with:
-          ref: refs/pull/${{ github.event.issue.number || github.event.number }}/head
+          ref: refs/pull/${{ github.event.number }}/head
           fetch-depth: 2
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.3
@@ -78,21 +85,32 @@ jobs:
           python3 -m pip install --upgrade pip virtualenv
           python3 ./mach bootstrap
           brew install gnu-tar
-      - name: Release build (${{ inputs.production && 'without' || 'with' }} debug assertions)
+      - name: Build (${{ inputs.profile }})
         run: |
-          python3 ./mach build ${cargo_profile_option}
+          python3 ./mach build --${{ inputs.profile }}
       - name: Smoketest
-        run: python3 ./mach smoketest ${cargo_profile_option}
+        uses: nick-fields/retry@v2
+        with: # See https://github.com/servo/servo/issues/30757
+          timeout_minutes: 5
+          max_attempts: 2
+          command: python3 ./mach smoketest --${{ inputs.profile }}
       - name: Script tests
         run: ./mach test-scripts
       - name: Unit tests
         if: ${{ inputs.unit-tests || github.ref_name == 'try-mac' }}
-        timeout-minutes: 30 # https://github.com/servo/servo/issues/30275
-        run: python3 ./mach test-unit ${cargo_profile_option}
+        uses: nick-fields/retry@v2
+        with:
+          timeout_minutes: 20 # https://github.com/servo/servo/issues/30275
+          max_attempts: 3 # https://github.com/servo/servo/issues/30683
+          command: python3 ./mach test-unit --${{ inputs.profile }}
       - name: Build mach package
-        run: python3 ./mach package ${cargo_profile_option}
+        run: python3 ./mach package --${{ inputs.profile }}
       - name: Run smoketest for mach package
-        run: ./etc/ci/macos_package_smoketest.sh target/${cargo_profile_name}/servo-tech-demo.dmg
+        uses: nick-fields/retry@v2
+        with: # See https://github.com/servo/servo/issues/30757
+          timeout_minutes: 5
+          max_attempts: 2
+          command: ./etc/ci/macos_package_smoketest.sh target/${{ inputs.profile }}/servo-tech-demo.dmg
       - name: Rename build timing
         run: cp -r target/cargo-timings target/cargo-timings-macos
       - name: Archive build timing
@@ -105,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: mac
-          path: target/${cargo_profile_name}/servo-tech-demo.dmg
+          path: target/${{ inputs.profile }}/servo-tech-demo.dmg
       - name: Upload nightly
         if: ${{ inputs.upload }}
         run: |
@@ -117,7 +135,7 @@ jobs:
           NIGHTLY_REPO_TOKEN: ${{ secrets.NIGHTLY_REPO_TOKEN }}
           NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
       - name: Build package for target
-        run: gtar -czf target.tar.gz target/${cargo_profile_name}/servo target/${cargo_profile_name}/*.dylib target/${cargo_profile_name}/lib/*.dylib resources
+        run: gtar -czf target.tar.gz target/${{ inputs.profile }}/servo target/${{ inputs.profile }}/lib/*.dylib resources
       - name: Upload package for target
         uses: actions/upload-artifact@v3
         with:
@@ -130,8 +148,9 @@ jobs:
     needs: ["build"]
     uses: ./.github/workflows/mac-wpt.yml
     with:
-      production: ${{ inputs.production }}
+      profile: ${{ inputs.profile }}
       layout: "layout-2020"
+    secrets: inherit
 
   wpt-2013:
     if: ${{ github.ref_name == 'try-wpt-mac' || inputs.wpt-layout == '2013' || inputs.wpt-layout == 'all' }}
@@ -139,8 +158,9 @@ jobs:
     needs: ["build"]
     uses: ./.github/workflows/mac-wpt.yml
     with:
-      production: ${{ inputs.production }}
+      profile: ${{ inputs.profile }}
       layout: "layout-2013"
+    secrets: inherit
 
   result:
     name: Result

@@ -130,8 +130,12 @@ class MarionetteBaseProtocolPart(BaseProtocolPart):
 
         while True:
             try:
-                return self.marionette.execute_async_script("""let callback = arguments[arguments.length - 1];
+                rv = self.marionette.execute_async_script("""let callback = arguments[arguments.length - 1];
 addEventListener("__test_restart", e => {e.preventDefault(); callback(true)})""")
+                # None can be returned if we try to run the script again before we've completed a navigation.
+                # In that case, keep retrying
+                if rv is not None:
+                    return rv
             except errors.NoSuchWindowException:
                 # The window closed
                 break
@@ -1033,8 +1037,14 @@ class MarionetteRefTestExecutor(RefTestExecutor):
         self.implementation_kwargs = {}
         if reftest_internal:
             self.implementation_kwargs["screenshot"] = reftest_screenshot
-            self.implementation_kwargs["chrome_scope"] = (browser_version is not None and
-                                                          int(browser_version.split(".")[0]) < 82)
+            self.implementation_kwargs["chrome_scope"] = False
+            # Older versions of Gecko require switching to chrome scope to run refests
+            if browser_version is not None:
+                try:
+                    major_version = int(browser_version.split(".")[0])
+                    self.implementation_kwargs["chrome_scope"] = major_version < 82
+                except ValueError:
+                    pass
         self.close_after_done = close_after_done
         self.has_window = False
         self.original_pref_values = {}

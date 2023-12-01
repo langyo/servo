@@ -855,13 +855,40 @@ pub trait ToRaqoteGradientStop {
     fn to_raqote(&self) -> raqote::GradientStop;
 }
 
+/// Clamp a 0..1 number to a 0..255 range to u8.
+///
+/// Whilst scaling by 256 and flooring would provide
+/// an equal distribution of integers to percentage inputs,
+/// this is not what Gecko does so we instead multiply by 255
+/// and round (adding 0.5 and flooring is equivalent to rounding)
+///
+/// Chrome does something similar for the alpha value, but not
+/// the rgb values.
+///
+/// See <https://bugzilla.mozilla.org/show_bug.cgi?id=1340484>
+///
+/// Clamping to 256 and rounding after would let 1.0 map to 256, and
+/// `256.0_f32 as u8` is undefined behavior:
+///
+/// <https://github.com/rust-lang/rust/issues/10184>
+#[inline]
+pub fn clamp_unit_f32(val: f32) -> u8 {
+    clamp_floor_256_f32(val * 255.)
+}
+
+/// Round and clamp a single number to a u8.
+#[inline]
+pub fn clamp_floor_256_f32(val: f32) -> u8 {
+    val.round().clamp(0., 255.) as u8
+}
+
 impl ToRaqoteGradientStop for CanvasGradientStop {
     fn to_raqote(&self) -> raqote::GradientStop {
         let color = raqote::Color::new(
-            self.color.alpha,
-            self.color.red,
-            self.color.green,
-            self.color.blue,
+            self.color.alpha.map(clamp_unit_f32).unwrap_or(0),
+            self.color.red.unwrap_or(0),
+            self.color.green.unwrap_or(0),
+            self.color.blue.unwrap_or(0),
         );
         let position = self.offset as f32;
         raqote::GradientStop { position, color }
@@ -875,10 +902,10 @@ impl<'a> ToRaqotePattern<'_> for FillOrStrokeStyle {
 
         match self {
             Color(color) => Some(Pattern::Color(
-                color.alpha,
-                color.red,
-                color.green,
-                color.blue,
+                color.alpha.map(clamp_unit_f32).unwrap_or(0),
+                color.red.unwrap_or(0),
+                color.green.unwrap_or(0),
+                color.blue.unwrap_or(0),
             )),
             LinearGradient(style) => {
                 let start = Point2D::new(style.x0 as f32, style.y0 as f32);
@@ -933,7 +960,12 @@ impl ToRaqoteStyle for RGBA {
     type Target = raqote::SolidSource;
 
     fn to_raqote_style(self) -> Self::Target {
-        raqote::SolidSource::from_unpremultiplied_argb(self.alpha, self.red, self.green, self.blue)
+        raqote::SolidSource::from_unpremultiplied_argb(
+            self.alpha.map(clamp_unit_f32).unwrap_or(0),
+            self.red.unwrap_or(0),
+            self.green.unwrap_or(0),
+            self.blue.unwrap_or(0),
+        )
     }
 }
 
